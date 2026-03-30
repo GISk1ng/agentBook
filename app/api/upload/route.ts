@@ -1,46 +1,37 @@
-import {NextResponse} from "next/server";
-import {handleUpload, HandleUploadBody} from "@vercel/blob/client";
-import {auth} from "@clerk/nextjs/server";
-import {MAX_FILE_SIZE} from "@/lib/constants";
+import { NextResponse } from 'next/server'
+import { put } from '@vercel/blob'
+import { auth } from '@clerk/nextjs/server'
+import { MAX_FILE_SIZE } from '@/lib/constants'
 
 export async function POST(request: Request): Promise<NextResponse> {
     try {
-        const body = (await request.json()) as HandleUploadBody;
+        const { userId } = await auth()
+        if (!userId) {
+            return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+        }
 
-        const jsonResponse = await handleUpload({
+        const formData = await request.formData()
+        const file = formData.get('file') as File
+        const pathname = formData.get('pathname') as string
+
+        if (!file || !pathname) {
+            return NextResponse.json({ error: 'Missing file or pathname' }, { status: 400 })
+        }
+
+        if (file.size > MAX_FILE_SIZE) {
+            return NextResponse.json({ error: 'File too large' }, { status: 400 })
+        }
+
+        const blob = await put(pathname, file, {
+            access: 'private',
             token: process.env.agentbook_READ_WRITE_TOKEN,
-            body,
-            request,
-            onBeforeGenerateToken: async () => {
-                const { userId } = await auth();
+            addRandomSuffix: true,
+        })
 
-                if(!userId) {
-                    throw new Error('Unauthorized: User not authenticated');
-                }
-
-                return {
-                    allowedContentTypes: ['application/pdf', 'image/jpeg', 'image/png', 'image/webp'],
-                    addRandomSuffix: true,
-                    maximumSizeInBytes: MAX_FILE_SIZE,
-                    tokenPayload: JSON.stringify({ userId })
-                }
-        } ,
-            onUploadCompleted: async ({ blob, tokenPayload }) => {
-                console.log('File uploaded to blob: ', blob.url)
-
-                const payload = tokenPayload ? JSON.parse(tokenPayload): null
-                const userId = payload?.userId;
-
-                // TODO: PostHog
-            }
-        });
-
-        return NextResponse.json(jsonResponse)
+        return NextResponse.json(blob)
     } catch (e) {
-        const message = e instanceof Error ? e.message : "An unknown error occurred";
-        const status = message.includes('Unauthorized') ? 401 : 500;
-        console.error('Upload error', e);
-        const clientMessage = status === 401 ? 'Unauthorized' : 'Upload failed';
-        return NextResponse.json({ error: clientMessage }, { status });
+        console.error('Upload error', e)
+        const message = e instanceof Error ? e.message : String(e)
+        return NextResponse.json({ error: message }, { status: 500 })
     }
 }

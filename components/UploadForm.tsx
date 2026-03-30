@@ -33,7 +33,17 @@ import {
 } from '@/lib/actions/book.actions'
 import { useRouter } from 'next/navigation'
 import { parsePDFFile } from '@/lib/utils'
-import { upload } from '@vercel/blob/client'
+async function uploadToBlob(pathname: string, file: File) {
+  const formData = new FormData()
+  formData.append('file', file)
+  formData.append('pathname', pathname)
+  const res = await fetch('/api/upload', { method: 'POST', body: formData })
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}))
+    throw new Error(err.error || 'Upload failed')
+  }
+  return res.json() as Promise<{ url: string; pathname: string }>
+}
 
 const UploadForm = () => {
   const [isSubmitting, setIsSubmitting] = useState(false)
@@ -63,6 +73,7 @@ const UploadForm = () => {
 
     setIsSubmitting(true)
     try {
+      console.log('1. checking book exists...')
       const existsCheck = await checkBookExists(data.title)
 
       if (existsCheck.exists && existsCheck.book) {
@@ -74,42 +85,29 @@ const UploadForm = () => {
       const fileTitle = data.title.replace(/\s+/g, '-').toLowerCase()
       const pdfFile = data.pdfFile
 
+      console.log('2. parsing PDF...')
       const parsedPDF = await parsePDFFile(pdfFile)
       if (parsedPDF.content.length === 0) {
         toast.error('无法解析pdf文件')
         return
       }
-      const uploadedPdfBlob = await upload(fileTitle, pdfFile, {
-        access: 'public',
-        handleUploadUrl: '/api/upload',
-        contentType: 'application/pdf',
-      })
+      console.log('3. uploading PDF blob...')
+      const uploadedPdfBlob = await uploadToBlob(fileTitle, pdfFile)
+      console.log('4. PDF uploaded:', uploadedPdfBlob)
 
       let coverUrl: string
 
       if (data.coverImage) {
-        const coverFile = data.coverImage
-        const uploadedCoverBlob = await upload(
-          `${fileTitle}_cover.png`,
-          coverFile,
-          {
-            access: 'public',
-            handleUploadUrl: '/api/upload',
-            contentType: coverFile.type,
-          },
-        )
+        const uploadedCoverBlob = await uploadToBlob(`${fileTitle}_cover`, data.coverImage)
         coverUrl = uploadedCoverBlob.url
       } else {
         const response = await fetch(parsedPDF.cover)
         const blob = await response.blob()
-
-        const uploadedCoverBlob = await upload(`${fileTitle}_cover.png`, blob, {
-          access: 'public',
-          handleUploadUrl: '/api/upload',
-          contentType: 'image/png',
-        })
+        const coverFile = new File([blob], `${fileTitle}_cover.png`, { type: 'image/png' })
+        const uploadedCoverBlob = await uploadToBlob(`${fileTitle}_cover`, coverFile)
         coverUrl = uploadedCoverBlob.url
       }
+      console.log('5. creating book in DB...')
       const book = await createBook({
         clerkId: userId,
         title: data.title,
@@ -120,6 +118,7 @@ const UploadForm = () => {
         coverURL: coverUrl,
         fileSize: pdfFile.size,
       })
+      console.log('6. createBook result:', book)
       if (!book.success) {
         toast.error((book.error as string) || 'Failed to create book')
         // if (book.isBillingError) {
